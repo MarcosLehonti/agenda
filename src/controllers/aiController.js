@@ -55,12 +55,12 @@ const chat = async (req, res, next) => {
       const taskObj = typeof t.toJSON === 'function' ? t.toJSON() : t;
       if (taskObj.startTime) {
         taskObj.startTime = new Date(taskObj.startTime).toLocaleString('es-ES', {
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+          timeZone: 'America/La_Paz'
         });
       }
       if (taskObj.endTime) {
         taskObj.endTime = new Date(taskObj.endTime).toLocaleString('es-ES', {
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+          timeZone: 'America/La_Paz'
         });
       }
       return taskObj;
@@ -71,7 +71,7 @@ const chat = async (req, res, next) => {
     // Obtenemos la hora actual exacta
     const now = new Date();
     const currentTimeStr = now.toLocaleString('es-ES', {
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      timeZone: 'America/La_Paz'
     });
 
     // Inicializar Gemini
