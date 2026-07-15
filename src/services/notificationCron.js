@@ -33,7 +33,7 @@ const startCron = () => {
           const timeString = new Date(task.startTime).toLocaleTimeString('es-ES', { 
             hour: '2-digit', 
             minute: '2-digit',
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+            timeZone: 'America/La_Paz'
           });
 
           await Notification.create({
