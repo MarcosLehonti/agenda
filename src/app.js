@@ -4,7 +4,13 @@ const cors = require('cors');
 const app = express();
 
 // Middlewares
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173', // Para cuando desarrolles localmente
+    'https://agenda-frontend-wine.vercel.app' // Para producción en Vercel
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 // Routes (We will add these soon)
