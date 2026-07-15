@@ -15,7 +15,17 @@ const getTaskById = async (id, userId) => {
   return task;
 };
 
+const appendTimezone = (dateStr) => {
+  if (typeof dateStr === 'string' && dateStr.length === 16) {
+    return `${dateStr}:00-04:00`;
+  }
+  return dateStr;
+};
+
 const createTask = async (taskData, userId) => {
+  if (taskData.startTime) taskData.startTime = appendTimezone(taskData.startTime);
+  if (taskData.endTime) taskData.endTime = appendTimezone(taskData.endTime);
+
   return await Task.create({
     ...taskData,
     userId
@@ -24,6 +34,9 @@ const createTask = async (taskData, userId) => {
 
 const updateTask = async (id, taskData, userId) => {
   const task = await getTaskById(id, userId);
+  
+  if (taskData.startTime) taskData.startTime = appendTimezone(taskData.startTime);
+  if (taskData.endTime) taskData.endTime = appendTimezone(taskData.endTime);
   
   await task.update(taskData);
   return task;
