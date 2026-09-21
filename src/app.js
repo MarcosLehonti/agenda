@@ -18,6 +18,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/tasks', require('./routes/taskRoutes'));
 app.use('/api/ai', require('./routes/aiRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
+app.use('/api/budget', require('./routes/budgetRoutes'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

@@ -2,6 +2,12 @@ const cron = require('node-cron');
 const { Op } = require('sequelize');
 const { Task, Notification } = require('../models');
 
+const checkNeedsTransportMoney = (title, description) => {
+  const text = `${title || ''} ${description || ''}`.toLowerCase();
+  const transportKeywords = ['entrenar', 'entrenamiento', 'gimnasio', 'gym', 'voley', 'futbol', 'basket', 'ir a', 'salir', 'mercado', 'comprar', 'supermercado', 'cita', 'viaje', 'clase presencial'];
+  return transportKeywords.some(keyword => text.includes(keyword));
+};
+
 const startCron = () => {
   console.log('Cron job de notificaciones iniciado. Revisando cada minuto...');
   
@@ -36,10 +42,16 @@ const startCron = () => {
             timeZone: 'America/La_Paz'
           });
 
+          const needsMoney = checkNeedsTransportMoney(task.title, task.description);
+          let extraMsg = '';
+          if (needsMoney) {
+            extraMsg = ' 🚌 Recuerda alistar unos 10 Bs para tus pasajes/gastos de traslado.';
+          }
+
           await Notification.create({
             userId: task.userId,
             taskId: task.id,
-            message: `Próxima tarea a las ${timeString}: ${task.title}. ¡Vete preparando!`
+            message: `Próxima tarea a las ${timeString}: "${task.title}".${extraMsg}`
           });
         }
       }
