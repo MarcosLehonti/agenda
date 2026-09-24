@@ -26,11 +26,11 @@ const chat = async (req, res, next) => {
         };
       });
     } catch (e) {
-      console.warn('Advertencia obteniendo tareas para contexto:', e.message);
+      console.warn('[Hovi] Advertencia obteniendo tareas:', e.message);
     }
 
     // 2. Obtener resumen financiero del mes actual
-    let compactFinances = { balanceDisponibleRestante: "0 Bs", categorias: [] };
+    let compactFinances = { balanceDisponibleRestante: '0 Bs', categorias: [] };
     let finSummary = null;
     try {
       finSummary = await budgetService.getFinancialSummary(userId);
@@ -51,14 +51,12 @@ const chat = async (req, res, next) => {
         }))
       };
     } catch (e) {
-      console.warn('Advertencia obteniendo finanzas para contexto:', e.message);
+      console.warn('[Hovi] Advertencia obteniendo finanzas:', e.message);
     }
 
     // Hora actual exacta (Zona Horaria Bolivia UTC-4)
     const now = new Date();
-    const currentTimeStr = now.toLocaleString('es-ES', {
-      timeZone: 'America/La_Paz'
-    });
+    const currentTimeStr = now.toLocaleString('es-ES', { timeZone: 'America/La_Paz' });
     const currentIsoDate = now.toISOString().slice(0, 10);
 
     const systemInstruction = `Eres Hovi, un asistente inteligente y empático de Agenda y Finanzas Personales.
@@ -81,18 +79,18 @@ Debes responder SIEMPRE en formato JSON válido estructurado con este esquema ex
     // "startTime": "YYYY-MM-DDTHH:mm"
 
     // Si action === "setMonthlyBudget":
-    // "totalBudget": número en Bs,
+    // "totalBudget": numero en Bs,
     // "month": "YYYY-MM" (opcional)
 
     // Si action === "createCategory":
-    // "name": "Nombre categoría",
-    // "allocatedAmount": número en Bs,
+    // "name": "Nombre categoria",
+    // "allocatedAmount": numero en Bs,
     // "color": "#hex" (opcional)
 
     // Si action === "addExpense":
-    // "amount": número en Bs gastado,
+    // "amount": numero en Bs gastado,
     // "description": "Detalle del gasto",
-    // "categoryName": "Nombre de categoría si aplica"
+    // "categoryName": "Nombre de categoria si aplica"
 
     // Si action === "chat":
     // params puede ser {}
@@ -101,14 +99,16 @@ Debes responder SIEMPRE en formato JSON válido estructurado con este esquema ex
 }
 
 SKILL 1: TAREAS (Agenda y Cronograma)
-- Si el usuario pide agendar o crear una tarea o actividad (ej: "crea una actividad de wally hoy a las 17", "ir a entrenar mañana a las 8am"), usa action "createTask" y llena params con startTime calculado (ej: "${currentIsoDate}T17:00").
+- Si el usuario pide agendar o crear una tarea o actividad (ej: "crea una actividad de wally hoy a las 17", "ir a entrenar manana a las 8am"), usa action "createTask" y llena params con startTime calculado (ej: "${currentIsoDate}T17:00").
 - Si no especifica la fecha, asume hoy (${currentIsoDate}).
+- Siempre confirma en message que la tarea fue creada con titulo, hora y prioridad.
 
 SKILL 2: FINANZAS (Presupuesto Inteligente y Control de Gastos)
-- Si el usuario dice que gastó dinero (ej: "gasté 20 Bs en cena", "pagué 10 Bs de pasaje"), usa action "addExpense".
+- Si el usuario dice que gasto dinero (ej: "gaste 20 Bs en cena", "pague 10 Bs de pasaje"), usa action "addExpense".
 - Si el usuario pregunta si PUEDE GASTAR en algo:
-  1. Evalúa saldo en la categoría y balance disponible general (${compactFinances.balanceDisponibleRestante}).
-  2. Responde con action "chat" y en "message" da una decisión clara al inicio: "✅ Sí, puedes gastar..." o "❌ No te lo recomiendo...".
+  1. Evalua saldo en la categoria y balance disponible general (${compactFinances.balanceDisponibleRestante}).
+  2. Responde con action "chat" y en "message" da una decision clara: "Si, puedes gastar..." o "No te lo recomiendo...".
+- Cuando registres un gasto, confirma en message que fue registrado y el saldo restante.
 
 DATOS EN TIEMPO REAL:
 - Fecha/Hora actual (Bolivia): ${currentTimeStr}
@@ -122,17 +122,20 @@ ${JSON.stringify(compactTasks, null, 1)}
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(200).json({ 
-        success: false, 
-        text: 'La clave GEMINI_API_KEY no está configurada en el servidor.' 
+      return res.status(200).json({
+        success: true,
+        text: 'La clave GEMINI_API_KEY no esta configurada en el servidor.'
       });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
+
+    // Lista de modelos — el usuario confirmo usar gemini-3.1-flash-lite primero
     const modelsToTry = [
       'gemini-3.1-flash-lite',
-      'gemini-3.1-flash-lite-preview',
-      'gemini-2.5-flash'
+      'gemini-3.6-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash'
     ];
 
     // Sanitizar historial de chat para cumplir reglas estrictas de Gemini
@@ -153,54 +156,67 @@ ${JSON.stringify(compactTasks, null, 1)}
       }
     }
 
+    // Siempre terminar historial con turno de modelo (antes del mensaje nuevo del usuario)
     if (validHistory.length > 0 && validHistory[validHistory.length - 1].role === 'user') {
       validHistory.pop();
     }
 
-    let result = null;
     let rawText = '';
     let lastError = null;
 
     for (const modelName of modelsToTry) {
       try {
+        console.log(`[Hovi] Intentando modelo: ${modelName}`);
         const jsonModel = genAI.getGenerativeModel({
           model: modelName,
           generationConfig: { responseMimeType: 'application/json' },
           systemInstruction
         });
 
-        const chatSession = jsonModel.startChat({
-          history: validHistory
-        });
-
-        result = await chatSession.sendMessage(message);
+        const chatSession = jsonModel.startChat({ history: validHistory });
+        const result = await chatSession.sendMessage(message);
         rawText = result.response.text();
-        if (rawText) break;
+
+        if (rawText && rawText.trim()) {
+          console.log(`[Hovi] OK - Respuesta de: ${modelName}`);
+          break;
+        }
       } catch (err) {
-        console.warn(`Aviso: Modelo ${modelName} no respondió (${err.message}), intentando alternativo...`);
+        const errMsg = err.message || String(err);
+        console.warn(`[Hovi] Modelo ${modelName} fallo: ${errMsg}`);
         lastError = err;
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 700));
       }
     }
 
-    if (!rawText) {
-      throw lastError || new Error('No se pudo obtener respuesta del modelo JSON.');
+    // Si ningún modelo respondió, dar respuesta amigable
+    if (!rawText || !rawText.trim()) {
+      console.error('[Hovi] Todos los modelos fallaron. Ultimo error:', lastError?.message);
+      return res.status(200).json({
+        success: true,
+        text: 'En este momento el servicio de IA esta un poco saturado. Por favor intenta de nuevo en unos segundos.'
+      });
     }
 
+    // Parsear JSON de la respuesta (limpiar posibles backticks de markdown)
     let parsedData = {};
-
     try {
-      parsedData = JSON.parse(rawText);
+      const cleanText = rawText.trim()
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      parsedData = JSON.parse(cleanText);
     } catch (parseErr) {
-      console.warn('Aviso parseando JSON de Gemini:', parseErr.message);
+      console.warn('[Hovi] Error parseando JSON:', parseErr.message, '| rawText:', rawText.slice(0, 200));
       return res.status(200).json({ success: true, text: rawText });
     }
 
     const action = parsedData.action || 'chat';
     const params = parsedData.params || {};
-    let finalMessage = parsedData.message || '¡Acción realizada con éxito!';
+    let finalMessage = parsedData.message || 'Listo! Puedo ayudarte con mas cosas.';
 
-    // Ejecutar acciones en la base de datos según lo solicitado
+    // Ejecutar acciones en la base de datos
     try {
       if (action === 'createTask') {
         let color = '#3b82f6';
@@ -219,7 +235,7 @@ ${JSON.stringify(compactTasks, null, 1)}
         await taskService.createTask({
           title: params.title || 'Nueva Tarea',
           description: params.description || '',
-          startTime: startTime,
+          startTime,
           priority: params.priority || 'Media',
           color
         }, userId);
@@ -243,13 +259,11 @@ ${JSON.stringify(compactTasks, null, 1)}
       } else if (action === 'addExpense' && params.amount) {
         let categoryId = null;
         if (finSummary && Array.isArray(finSummary.categories) && params.categoryName) {
-          const matchedCategory = finSummary.categories.find(c => 
+          const matchedCategory = finSummary.categories.find(c =>
             c.name.toLowerCase().includes(params.categoryName.toLowerCase()) ||
             params.categoryName.toLowerCase().includes(c.name.toLowerCase())
           );
-          if (matchedCategory) {
-            categoryId = matchedCategory.id;
-          }
+          if (matchedCategory) categoryId = matchedCategory.id;
         }
 
         await budgetService.addExpense(userId, {
@@ -259,29 +273,23 @@ ${JSON.stringify(compactTasks, null, 1)}
         });
       }
     } catch (dbErr) {
-      console.error('Error ejecutando acción en base de datos:', dbErr);
+      console.error('[Hovi] Error en base de datos:', dbErr.message);
+      // Devolvemos el mensaje de la IA de todos modos + aviso de error de guardado
       return res.status(200).json({
         success: true,
-        text: `❌ Hubo un inconveniente al guardar los datos: ${dbErr.message}`
+        text: `${finalMessage}\n\n⚠️ Hubo un problema guardando los datos. Intenta de nuevo.`
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      text: finalMessage
-    });
+    return res.status(200).json({ success: true, text: finalMessage });
+
   } catch (error) {
-    console.error('Error general en Gemini Chat Controller:', error);
+    console.error('[Hovi] Error general en Chat Controller:', error);
     return res.status(200).json({
       success: true,
-      text: 'Ocurrió una intermitencia con el servidor del asistente. Por favor intenta de nuevo.'
+      text: 'El servicio de IA experimento una intermitencia temporal. Por favor intenta de nuevo.'
     });
   }
 };
 
-module.exports = {
-  chat
-};
-
-
-
+module.exports = { chat };
