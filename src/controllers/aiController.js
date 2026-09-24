@@ -2,157 +2,117 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const taskService = require('../services/taskService');
 const budgetService = require('../services/budgetService');
 
-const functionDeclarations = [
-  // --- SKILL: TAREAS ---
-  {
-    name: "createTask",
-    description: "Crea una nueva tarea en la agenda del usuario.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        title: { type: "STRING", description: "Título breve de la tarea" },
-        description: { type: "STRING", description: "Detalles adicionales" },
-        startTime: { type: "STRING", description: "Fecha y hora en formato YYYY-MM-DDTHH:mm (Ej: 2026-09-21T18:00)" },
-        priority: { type: "STRING", description: "Prioridad: Baja, Media, o Alta", enum: ["Baja", "Media", "Alta"] }
-      },
-      required: ["title", "startTime"]
-    }
-  },
-  {
-    name: "updateTaskStatus",
-    description: "Cambia el estado de una tarea (ej. marcarla como completada o pendiente).",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        id: { type: "STRING", description: "El ID de la tarea" },
-        status: { type: "STRING", description: "El nuevo estado: Pendiente, En progreso, Completada", enum: ["Pendiente", "En progreso", "Completada"] }
-      },
-      required: ["id", "status"]
-    }
-  },
-  {
-    name: "rescheduleTask",
-    description: "Cambia la fecha/hora de una tarea existente.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        id: { type: "STRING", description: "El ID de la tarea" },
-        startTime: { type: "STRING", description: "La nueva fecha y hora en formato YYYY-MM-DDTHH:mm" }
-      },
-      required: ["id", "startTime"]
-    }
-  },
-
-  // --- SKILL: FINANZAS ---
-  {
-    name: "setMonthlyBudget",
-    description: "Establece o actualiza el presupuesto total del mes para el usuario.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        totalBudget: { type: "NUMBER", description: "Monto total en Bs asignado para el mes" },
-        month: { type: "STRING", description: "Mes en formato YYYY-MM (opcional, por defecto el mes actual)" }
-      },
-      required: ["totalBudget"]
-    }
-  },
-  {
-    name: "createCategory",
-    description: "Crea una nueva categoría de gastos con su monto asignado.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        name: { type: "STRING", description: "Nombre de la categoría (ej: Comida, Pasajes, Ocio, Gimnasio)" },
-        allocatedAmount: { type: "NUMBER", description: "Monto en Bs asignado a esta categoría" },
-        color: { type: "STRING", description: "Color hexadecimal opcional (ej: #ef4444, #10b981)" }
-      },
-      required: ["name", "allocatedAmount"]
-    }
-  },
-  {
-    name: "addExpense",
-    description: "Registra un gasto realizado en una categoría específica.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        amount: { type: "NUMBER", description: "Monto en Bs gastado" },
-        description: { type: "STRING", description: "Detalle del gasto (ej: Cena rápida, Pasajes trufi, Almuerzo)" },
-        categoryName: { type: "STRING", description: "Nombre de la categoría a la que pertenece el gasto" }
-      },
-      required: ["amount", "description"]
-    }
-  }
-];
-
 const chat = async (req, res, next) => {
   try {
-    const { history, message, activeSkill } = req.body;
+    const { history, message } = req.body;
     const userId = req.user.id;
 
-    // 1. Obtener tareas del usuario (optimizado: sólo campos necesarios)
-    const tasks = await taskService.getTasks(userId);
-    const compactTasks = tasks.map(t => {
-      const taskObj = typeof t.toJSON === 'function' ? t.toJSON() : t;
-      return {
-        id: taskObj.id,
-        title: taskObj.title,
-        startTime: taskObj.startTime ? new Date(taskObj.startTime).toLocaleString('es-ES', { timeZone: 'America/La_Paz' }) : null,
-        status: taskObj.status,
-        priority: taskObj.priority
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ success: false, text: 'Por favor escribe un mensaje para continuar.' });
+    }
+
+    // 1. Obtener tareas del usuario
+    let compactTasks = [];
+    try {
+      const tasks = await taskService.getTasks(userId);
+      compactTasks = tasks.map(t => {
+        const taskObj = typeof t.toJSON === 'function' ? t.toJSON() : t;
+        return {
+          id: taskObj.id,
+          title: taskObj.title,
+          startTime: taskObj.startTime ? new Date(taskObj.startTime).toLocaleString('es-ES', { timeZone: 'America/La_Paz' }) : null,
+          status: taskObj.status,
+          priority: taskObj.priority
+        };
+      });
+    } catch (e) {
+      console.warn('Advertencia obteniendo tareas para contexto:', e.message);
+    }
+
+    // 2. Obtener resumen financiero del mes actual
+    let compactFinances = { balanceDisponibleRestante: "0 Bs", categorias: [] };
+    let finSummary = null;
+    try {
+      finSummary = await budgetService.getFinancialSummary(userId);
+      compactFinances = {
+        mes: finSummary.budget.month,
+        presupuestoTotal: `${finSummary.totalBudget} ${finSummary.currency}`,
+        totalAsignadoCategorias: `${finSummary.totalAllocated} ${finSummary.currency}`,
+        totalGastado: `${finSummary.totalSpent} ${finSummary.currency}`,
+        balanceDisponibleRestante: `${finSummary.remainingBudget} ${finSummary.currency}`,
+        saldoSinAsignar: `${finSummary.unallocatedBudget} ${finSummary.currency}`,
+        estadoBalance: finSummary.status,
+        categorias: finSummary.categories.map(c => ({
+          id: c.id,
+          nombre: c.name,
+          asignado: `${c.allocatedAmount} Bs`,
+          gastado: `${c.spent} Bs`,
+          disponibleEnCategoria: `${c.remaining} Bs`
+        }))
       };
-    });
+    } catch (e) {
+      console.warn('Advertencia obteniendo finanzas para contexto:', e.message);
+    }
 
-    // 2. Obtener resumen financiero del mes actual (optimizado)
-    const finSummary = await budgetService.getFinancialSummary(userId);
-    const compactFinances = {
-      mes: finSummary.budget.month,
-      presupuestoTotal: `${finSummary.totalBudget} ${finSummary.currency}`,
-      totalAsignadoCategorias: `${finSummary.totalAllocated} ${finSummary.currency}`,
-      totalGastado: `${finSummary.totalSpent} ${finSummary.currency}`,
-      balanceDisponibleRestante: `${finSummary.remainingBudget} ${finSummary.currency}`,
-      saldoSinAsignar: `${finSummary.unallocatedBudget} ${finSummary.currency}`,
-      estadoBalance: finSummary.status, // 'positive', 'negative', 'zero'
-      categorias: finSummary.categories.map(c => ({
-        id: c.id,
-        nombre: c.name,
-        asignado: `${c.allocatedAmount} Bs`,
-        gastado: `${c.spent} Bs`,
-        disponibleEnCategoria: `${c.remaining} Bs`
-      }))
-    };
-
-    // Hora actual exacta
+    // Hora actual exacta (Zona Horaria Bolivia UTC-4)
     const now = new Date();
     const currentTimeStr = now.toLocaleString('es-ES', {
       timeZone: 'America/La_Paz'
     });
+    const currentIsoDate = now.toISOString().slice(0, 10);
 
-    // Instrucciones del sistema estructuradas por Skills y ultra-optimizadas
-    const systemInstruction = `Eres Hovi, un asistente inteligente de Agenda y Finanzas Personales.
-Operas con 2 Skills principales conectadas entre sí:
+    const systemInstruction = `Eres Hovi, un asistente inteligente y empático de Agenda y Finanzas Personales.
+Debes responder SIEMPRE en formato JSON válido estructurado con este esquema exacto:
+{
+  "action": "createTask" | "updateTaskStatus" | "rescheduleTask" | "setMonthlyBudget" | "createCategory" | "addExpense" | "chat",
+  "params": {
+    // Si action === "createTask":
+    // "title": "Nombre de la tarea o actividad",
+    // "startTime": "YYYY-MM-DDTHH:mm" (fecha y hora exacta en formato YYYY-MM-DDTHH:mm calculada en base a la fecha actual ${currentIsoDate} y la hora pedida),
+    // "priority": "Baja" | "Media" | "Alta",
+    // "description": "Detalles adicionales opcionales"
+
+    // Si action === "updateTaskStatus":
+    // "id": "id de la tarea",
+    // "status": "Pendiente" | "En progreso" | "Completada"
+
+    // Si action === "rescheduleTask":
+    // "id": "id de la tarea",
+    // "startTime": "YYYY-MM-DDTHH:mm"
+
+    // Si action === "setMonthlyBudget":
+    // "totalBudget": número en Bs,
+    // "month": "YYYY-MM" (opcional)
+
+    // Si action === "createCategory":
+    // "name": "Nombre categoría",
+    // "allocatedAmount": número en Bs,
+    // "color": "#hex" (opcional)
+
+    // Si action === "addExpense":
+    // "amount": número en Bs gastado,
+    // "description": "Detalle del gasto",
+    // "categoryName": "Nombre de categoría si aplica"
+
+    // Si action === "chat":
+    // params puede ser {}
+  },
+  "message": "Tu respuesta conversacional con emojis para mostrarle al usuario."
+}
 
 SKILL 1: TAREAS (Agenda y Cronograma)
-- Gestionas el tiempo, citas y pendientes del usuario.
-- Si el usuario menciona actividades (ej. ir a entrenar, salir a comer, estudiar), analiza tiempos y necesidades asociadas.
+- Si el usuario pide agendar o crear una tarea o actividad (ej: "crea una actividad de wally hoy a las 17", "ir a entrenar mañana a las 8am"), usa action "createTask" y llena params con startTime calculado (ej: "${currentIsoDate}T17:00").
+- Si no especifica la fecha, asume hoy (${currentIsoDate}).
 
 SKILL 2: FINANZAS (Presupuesto Inteligente y Control de Gastos)
-- Gestionas el presupuesto mensual y categorías dinámicas.
-- Si el usuario pregunta si PUEDE GASTAR en algo (ej: "¿Puedo gastar 20 Bs en una cena hoy?"):
-  1. Identifica a qué categoría pertenece (ej: "Comida").
-  2. Evalúa el saldo disponible en esa categoría y el balance general restante (${compactFinances.balanceDisponibleRestante}).
-  3. Revisa la agenda de hoy: si tiene actividades pendientes que requieran dinero (ej. transporte/pasajes), tómalo en cuenta.
-  4. Responde SIEMPRE con una DECISIÓN CLARA al inicio:
-     • "✅ Sí, puedes gastar [monto] Bs..." (si hay presupuesto suficiente en la categoría y total).
-     • "❌ No es recomendable / No tienes presupuesto suficiente..." (si excede la categoría o dejaría el balance en rojo).
-  5. Muestra cuánto saldo le quedaría en esa categoría tras el gasto.
-  6. Da un consejo proactivo breve de ahorro ("💡 Tip de ahorro: ...").
-
-SINCRONIZACIÓN TAREAS + FINANZAS:
-- Si el usuario tiene una tarea (ej: ir al gimnasio/entrenamiento/clases), adviértele que necesitará dinero para pasajes o viáticos (ej. 10 Bs) antes de gastar su dinero disponible.
-- Sé empático, directo, proactivo y muy claro.
+- Si el usuario dice que gastó dinero (ej: "gasté 20 Bs en cena", "pagué 10 Bs de pasaje"), usa action "addExpense".
+- Si el usuario pregunta si PUEDE GASTAR en algo:
+  1. Evalúa saldo en la categoría y balance disponible general (${compactFinances.balanceDisponibleRestante}).
+  2. Responde con action "chat" y en "message" da una decisión clara al inicio: "✅ Sí, puedes gastar..." o "❌ No te lo recomiendo...".
 
 DATOS EN TIEMPO REAL:
-- Fecha/Hora actual: ${currentTimeStr}
+- Fecha/Hora actual (Bolivia): ${currentTimeStr}
+- Fecha ISO hoy: ${currentIsoDate}
 - Finanzas actuales del usuario:
 ${JSON.stringify(compactFinances, null, 1)}
 
@@ -160,102 +120,168 @@ ${JSON.stringify(compactFinances, null, 1)}
 ${JSON.stringify(compactTasks, null, 1)}
 `;
 
-    // Inicializar Gemini
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-3.1-flash-lite',
-      tools: [{ functionDeclarations }],
-      systemInstruction
-    });
-
-    const chatSession = model.startChat({
-      history: history || [],
-    });
-
-    const result = await chatSession.sendMessage(message);
-    const response = result.response;
-    const calls = response.functionCalls();
-
-    if (calls && calls.length > 0) {
-      const call = calls[0];
-      let functionResult = {};
-
-      console.log('Gemini ejecuta función:', call.name, call.args);
-
-      try {
-        if (call.name === 'createTask') {
-          let color = '#3b82f6';
-          if (call.args.priority === 'Alta') color = '#ef4444';
-          if (call.args.priority === 'Baja') color = '#22c55e';
-
-          await taskService.createTask({
-            title: call.args.title,
-            description: call.args.description,
-            startTime: call.args.startTime,
-            priority: call.args.priority || 'Media',
-            color
-          }, userId);
-          functionResult = { status: "Success", result: `Tarea '${call.args.title}' creada exitosamente.` };
-
-        } else if (call.name === 'updateTaskStatus') {
-          await taskService.updateTaskStatus(call.args.id, call.args.status, userId);
-          functionResult = { status: "Success", result: `Estado actualizado a ${call.args.status}.` };
-
-        } else if (call.name === 'rescheduleTask') {
-          await taskService.updateTask(call.args.id, { startTime: call.args.startTime }, userId);
-          functionResult = { status: "Success", result: `Tarea reprogramada a ${call.args.startTime}.` };
-
-        } else if (call.name === 'setMonthlyBudget') {
-          await budgetService.setTotalBudget(userId, call.args.month, call.args.totalBudget);
-          functionResult = { status: "Success", result: `Presupuesto mensual establecido en ${call.args.totalBudget} Bs.` };
-
-        } else if (call.name === 'createCategory') {
-          await budgetService.createCategory(userId, {
-            name: call.args.name,
-            allocatedAmount: call.args.allocatedAmount,
-            color: call.args.color
-          });
-          functionResult = { status: "Success", result: `Categoría '${call.args.name}' creada con ${call.args.allocatedAmount} Bs asignados.` };
-
-        } else if (call.name === 'addExpense') {
-          // Buscar categoría por nombre si existe
-          let categoryId = null;
-          if (call.args.categoryName) {
-            const matchedCategory = finSummary.categories.find(c => 
-              c.name.toLowerCase().includes(call.args.categoryName.toLowerCase()) ||
-              call.args.categoryName.toLowerCase().includes(c.name.toLowerCase())
-            );
-            if (matchedCategory) categoryId = matchedCategory.id;
-          }
-
-          await budgetService.addExpense(userId, {
-            categoryId,
-            amount: call.args.amount,
-            description: call.args.description
-          });
-          functionResult = { status: "Success", result: `Gasto de ${call.args.amount} Bs registrado en ${call.args.categoryName || 'General'}.` };
-        }
-      } catch (err) {
-        functionResult = { status: "Error", error: err.message };
-      }
-
-      const funcResponseResult = await chatSession.sendMessage([{
-        functionResponse: {
-          name: call.name,
-          response: functionResult
-        }
-      }]);
-
-      return res.status(200).json({ success: true, text: funcResponseResult.response.text() });
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(200).json({ 
+        success: false, 
+        text: 'La clave GEMINI_API_KEY no está configurada en el servidor.' 
+      });
     }
 
-    res.status(200).json({ success: true, text: response.text() });
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const modelsToTry = [
+      'gemini-3.1-flash-lite',
+      'gemini-3.1-flash-lite-preview',
+      'gemini-2.5-flash'
+    ];
+
+    // Sanitizar historial de chat para cumplir reglas estrictas de Gemini
+    const rawHistory = Array.isArray(history) ? history : [];
+    const validHistory = [];
+    let expectedRole = 'user';
+
+    for (const h of rawHistory) {
+      if (h && h.role && Array.isArray(h.parts) && h.parts.length > 0 && h.parts[0].text) {
+        const role = h.role === 'user' ? 'user' : 'model';
+        if (role === expectedRole) {
+          validHistory.push({
+            role,
+            parts: [{ text: String(h.parts[0].text) }]
+          });
+          expectedRole = expectedRole === 'user' ? 'model' : 'user';
+        }
+      }
+    }
+
+    if (validHistory.length > 0 && validHistory[validHistory.length - 1].role === 'user') {
+      validHistory.pop();
+    }
+
+    let result = null;
+    let rawText = '';
+    let lastError = null;
+
+    for (const modelName of modelsToTry) {
+      try {
+        const jsonModel = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: { responseMimeType: 'application/json' },
+          systemInstruction
+        });
+
+        const chatSession = jsonModel.startChat({
+          history: validHistory
+        });
+
+        result = await chatSession.sendMessage(message);
+        rawText = result.response.text();
+        if (rawText) break;
+      } catch (err) {
+        console.warn(`Aviso: Modelo ${modelName} no respondió (${err.message}), intentando alternativo...`);
+        lastError = err;
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+
+    if (!rawText) {
+      throw lastError || new Error('No se pudo obtener respuesta del modelo JSON.');
+    }
+
+    let parsedData = {};
+
+    try {
+      parsedData = JSON.parse(rawText);
+    } catch (parseErr) {
+      console.warn('Aviso parseando JSON de Gemini:', parseErr.message);
+      return res.status(200).json({ success: true, text: rawText });
+    }
+
+    const action = parsedData.action || 'chat';
+    const params = parsedData.params || {};
+    let finalMessage = parsedData.message || '¡Acción realizada con éxito!';
+
+    // Ejecutar acciones en la base de datos según lo solicitado
+    try {
+      if (action === 'createTask') {
+        let color = '#3b82f6';
+        if (params.priority === 'Alta') color = '#ef4444';
+        if (params.priority === 'Baja') color = '#22c55e';
+
+        let startTime = params.startTime;
+        if (!startTime) {
+          const defaultTime = new Date();
+          defaultTime.setHours(defaultTime.getHours() + 1, 0, 0, 0);
+          startTime = defaultTime.toISOString().slice(0, 16);
+        } else if (typeof startTime === 'string' && startTime.length === 5 && startTime.includes(':')) {
+          startTime = `${currentIsoDate}T${startTime}`;
+        }
+
+        await taskService.createTask({
+          title: params.title || 'Nueva Tarea',
+          description: params.description || '',
+          startTime: startTime,
+          priority: params.priority || 'Media',
+          color
+        }, userId);
+
+      } else if (action === 'updateTaskStatus' && params.id && params.status) {
+        await taskService.updateTaskStatus(params.id, params.status, userId);
+
+      } else if (action === 'rescheduleTask' && params.id && params.startTime) {
+        await taskService.updateTask(params.id, { startTime: params.startTime }, userId);
+
+      } else if (action === 'setMonthlyBudget' && params.totalBudget) {
+        await budgetService.setTotalBudget(userId, params.month, Number(params.totalBudget));
+
+      } else if (action === 'createCategory' && params.name && params.allocatedAmount) {
+        await budgetService.createCategory(userId, {
+          name: params.name,
+          allocatedAmount: Number(params.allocatedAmount),
+          color: params.color || '#3b82f6'
+        });
+
+      } else if (action === 'addExpense' && params.amount) {
+        let categoryId = null;
+        if (finSummary && Array.isArray(finSummary.categories) && params.categoryName) {
+          const matchedCategory = finSummary.categories.find(c => 
+            c.name.toLowerCase().includes(params.categoryName.toLowerCase()) ||
+            params.categoryName.toLowerCase().includes(c.name.toLowerCase())
+          );
+          if (matchedCategory) {
+            categoryId = matchedCategory.id;
+          }
+        }
+
+        await budgetService.addExpense(userId, {
+          categoryId,
+          amount: Number(params.amount),
+          description: params.description || 'Gasto registrado por Asistente'
+        });
+      }
+    } catch (dbErr) {
+      console.error('Error ejecutando acción en base de datos:', dbErr);
+      return res.status(200).json({
+        success: true,
+        text: `❌ Hubo un inconveniente al guardar los datos: ${dbErr.message}`
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      text: finalMessage
+    });
   } catch (error) {
-    console.error('Error en Gemini:', error);
-    next(error);
+    console.error('Error general en Gemini Chat Controller:', error);
+    return res.status(200).json({
+      success: true,
+      text: 'Ocurrió una intermitencia con el servidor del asistente. Por favor intenta de nuevo.'
+    });
   }
 };
 
 module.exports = {
   chat
 };
+
+
+
